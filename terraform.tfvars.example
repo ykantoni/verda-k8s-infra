@@ -1,12 +1,8 @@
 # Copy to terraform.tfvars and adjust as needed.
-# cp_ip/worker_ip are not variables here — they're read automatically from
-# verda-vm-infra's state (see main.tf's terraform_remote_state data source).
-# Its path defaults to ../verda-vm-infra/terraform.tfstate; override it with
-# the TF_VAR_tfstate_location environment variable rather than setting it
-# here, so it stays out of any committed tfvars file.
+# tfstate_location/kubeconfig_path are not set here — they're overridden
+# (if needed at all) via TF_VAR_tfstate_location/TF_VAR_kubeconfig_path,
+# so they stay out of any committed tfvars file. See versions.tf/variables.tf.
 ssh_user              = "root"
 ssh_private_key_path  = "~/.ssh/id_ed25519"
-rke2_version          = "v1.37.1+rke2r1"
-pod_cidr              = "1.1.0.0/16"
-service_cidr          = "2.2.0.0/16"
-cilium_cluster_name   = "verdaclu"
+argocd_namespace      = "argocd"
+argocd_chart_version  = "10.10.1"

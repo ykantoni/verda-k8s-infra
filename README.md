@@ -1,57 +1,49 @@
-# Verda Cloud: RKE2 Kubernetes bootstrap
+# Verda Cloud: Argo CD
 
-This Terraform configuration installs and joins a 2-node
-[RKE2](https://docs.rke2.io/) Kubernetes cluster — one control-plane node,
-one worker — onto VMs that already exist. It does **not** create any VMs
-itself: it connects over SSH to IPs read from `verda-vm-infra`'s state and
-runs the RKE2 installer there.
+This Terraform configuration installs [Argo CD](https://argo-cd.readthedocs.io/)
+onto a cluster that already exists — via a real Terraform-managed
+`helm_release` (the official `argo/argo-cd` chart), not a shell script, so
+`plan` shows real diffs and `destroy` actually uninstalls it.
 
 It's meant to be paired with the sibling
 [`verda-vm-infra`](https://github.com/ykantoni/verda-vm-infra) repo, which
-provisions the VMs on [Verda Cloud](https://verda.com). The two are applied
-independently — you can destroy and re-bootstrap the Kubernetes layer
-without touching the VMs, or recreate the VMs without needing to redesign
-how Kubernetes gets installed.
-
-## What this does
-
-- Generates one shared join token (`random_password.rke2_token`).
-- Connects to the control-plane IP over SSH and runs the RKE2 server
-  installer (`get.rke2.io`), configured with that token.
-- Connects to the worker IP over SSH and runs the RKE2 agent installer,
-  configured to join the control plane's `:9345` with the same token.
-- Re-runs a node's install only when its target host or the rendered
-  script changes (new token, new RKE2 version, or the IP changed because
-  the underlying VM was replaced) — a no-op re-apply does nothing.
+provisions the VMs *and* bootstraps RKE2 + Cilium onto them. The two are
+applied independently — you can reinstall Argo CD without touching the
+cluster, or recreate the cluster without needing to redesign how Argo CD
+gets installed.
 
 ## Module structure
 
-[`modules/rke2`](modules/rke2) takes a `role` (`server` or `agent`), a
-shared `token`, and a `host` to SSH into, and renders + executes the
-matching install script there via a `null_resource` with `file` and
-`remote-exec` provisioners. It creates no cloud resources — it only acts on
-a VM that's already running.
+[`modules/argocd`](modules/argocd) is a thin wrapper around a single
+`helm_release` resource. It takes no connection details of its own — the
+root module configures the `helm` provider and passes it in
+(`providers = { helm = helm }`), the same way any Terraform module
+receives a provider from its caller.
+
+### How the `helm` provider finds the cluster
+
+RKE2 bootstrap now lives entirely in `verda-vm-infra`, including fetching
+a kubeconfig to a static local path there
+(`verda-vm-infra/.terraform-kubeconfig.yaml`, gitignored). This repo's
+`helm` provider ([versions.tf](versions.tf)) just points `config_path` at
+that same file via a sibling-repo path — defaulting to
+`../verda-vm-infra/.terraform-kubeconfig.yaml`, overridable with
+`TF_VAR_kubeconfig_path` (same convention as `TF_VAR_tfstate_location`,
+see below).
+
+Since the two repos are applied independently, there's no Terraform-level
+dependency enforcing order across them — `verda-vm-infra` has to actually
+be applied first so that file exists, or `helm_release.argocd`'s plan will
+fail trying to read it.
 
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5 or newer, or [OpenTofu](https://opentofu.org).
-- Two running VMs reachable over SSH as `root` (e.g. from `verda-vm-infra`), with the matching private key available locally.
-- `ssh` and `scp`-capable connectivity between this machine and both VMs (the `file`/`remote-exec` provisioners use it under the hood).
+- `verda-vm-infra` already applied (see its README) — this repo reads its
+  kubeconfig file and, for `argocd_admin_password_command` only, its
+  `cp1_ip` state output.
 
-## 1. Apply verda-vm-infra first
-
-This repo reads the control-plane and worker IPs directly out of
-`verda-vm-infra`'s Terraform state (`data "terraform_remote_state" "vm"` in
-[main.tf](main.tf)) — there's nothing to copy by hand, provided you use the
-root [Justfile](../Justfile) (`just vm-apply`, see `verda-vm-infra`'s
-README), which also points this repo at the right state file for you via
-`TF_VAR_tfstate_location`.
-
-If a VM in `verda-vm-infra` is ever replaced and gets a new IP, just re-run
-`just k8s-apply` — the new IP is picked up automatically, no
-`terraform.tfvars` edit needed.
-
-## 2. Configure
+## 1. Configure
 
 ```bash
 cp terraform.tfvars.example terraform.tfvars
@@ -59,15 +51,14 @@ cp terraform.tfvars.example terraform.tfvars
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `ssh_user` | SSH user on both VMs | `root` |
-| `ssh_private_key_path` | Private key matching the public key installed on the VMs | `~/.ssh/id_ed25519` |
-| `rke2_version` | RKE2 version to install | `v1.37.1+rke2r1` |
-| `pod_cidr` | Pod IP address range (`cluster-cidr`) | `1.1.0.0/16` |
-| `service_cidr` | Service IP address range (`service-cidr`) | `2.2.0.0/16` |
-| `cilium_cluster_name` | Cilium's cluster identity name (`cluster.name` Helm value) | `verdaclu` |
-| `tfstate_location` | Path to verda-vm-infra's `terraform.tfstate`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
+| `ssh_user` | SSH user on the control-plane node (only for `argocd_admin_password_command`) | `root` |
+| `ssh_private_key_path` | Private key matching the public key `verda-vm-infra` installed (only for `argocd_admin_password_command`) | `~/.ssh/id_ed25519` |
+| `argocd_namespace` | Kubernetes namespace to install Argo CD into | `argocd` |
+| `argocd_chart_version` | `argo-cd` Helm chart version (chart versioning tracks independently of the app version — 10.10.1 installs app v3.5.4) | `10.10.1` |
+| `tfstate_location` | Path to `verda-vm-infra`'s `terraform.tfstate`, read for `cp1_ip`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
+| `kubeconfig_path` | Path to the kubeconfig `verda-vm-infra` generates. Set via `TF_VAR_kubeconfig_path` (the Justfile does this for you), not here | `../verda-vm-infra/.terraform-kubeconfig.yaml` |
 
-## 3. Deploy
+## 2. Deploy
 
 From the `verda-cloud` root:
 
@@ -77,83 +68,41 @@ just k8s-apply
 ```
 
 (Or, inside this directory directly: `terraform init && terraform plan &&
-terraform apply` — but then `tfstate_location` falls back to its plain
-relative default instead of the Justfile's computed absolute path, so make
-sure that still resolves correctly for your checkout, or export
-`TF_VAR_tfstate_location` yourself first.)
+terraform apply` — but then `tfstate_location`/`kubeconfig_path` fall back
+to their plain relative defaults instead of the Justfile's computed
+absolute paths, so make sure those still resolve correctly for your
+checkout, or export `TF_VAR_tfstate_location`/`TF_VAR_kubeconfig_path`
+yourself first.)
 
-Unlike a boot-time startup script, this blocks until each install finishes
-over SSH — when `apply` completes, RKE2 is already installed and the
-services are started. Give the Cilium CNI pods a little longer to come up
-before nodes show `Ready`.
+## 3. Access Argo CD
 
-This cluster runs [Cilium](https://cilium.io/) instead of RKE2's default
-Canal, in full kube-proxy replacement mode (RKE2's built-in kube-proxy is
-disabled via `disable-kube-proxy: true`, and Cilium's `kubeProxyReplacement`
-takes over entirely). Pod/service CIDRs and the cluster name are set via
-`pod_cidr`/`service_cidr`/`cilium_cluster_name` (see the variable table
-below) and passed into a `HelmChartConfig` the install script writes for
-RKE2's bundled `rke2-cilium` chart.
-
-## 4. Connect to the cluster from outside Verda Cloud
+Argo CD's `argocd-server` is a `ClusterIP` service — not exposed outside
+the cluster by default. Get the initial admin password (username `admin`):
 
 ```bash
-just k8s-config
+eval "$(terraform output -raw argocd_admin_password_command)"
 ```
 
-This writes `~/kubeconfig.yaml` — in your home directory, regardless of
-which directory you ran it from — rewriting the server address from
-`127.0.0.1` to the control-plane's public IP. Its TLS certificate already
-includes that IP (the install script sets `tls-san`), so no
-`--insecure-skip-tls-verify` is needed:
+Then reach the UI/API either by tunneling through SSH:
 
 ```bash
-kubectl --kubeconfig ~/kubeconfig.yaml get nodes
+ssh -L 8080:localhost:8080 root@<cp1-ip> \
+  kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n argocd port-forward svc/argocd-server 8080:443
+# then open https://localhost:8080
 ```
 
-You should see both nodes `Ready` within a minute or so. Point any
-kubectl-compatible tool (k9s, Lens, Helm, CI pipelines) at
-`~/kubeconfig.yaml`, or merge it into `~/.kube/config`.
-
-The API server (`terraform output api_server_url`) listens on `:6443` and
-is reachable the same way from anywhere with network access to the IP —
-the kubeconfig isn't tied to the machine that generated it.
-
-### Reach apps running in the cluster
-
-- **NodePort**: a `Service` of type `NodePort` is reachable at
-  `<cp1 or worker1 ip>:<30000-32767>`.
-- **Ingress**: RKE2 ships `rke2-ingress-nginx` by default, exposed through
-  its own `NodePort` (check with
-  `kubectl get svc -n kube-system rke2-ingress-nginx-controller`); point a
-  DNS record or `/etc/hosts` entry at either node's IP and that port.
-- **LoadBalancer**: RKE2's bundled `servicelb` (Klipper) binds
-  `LoadBalancer` services directly to ports 80/443/etc. on every node's
-  public IP — no external load balancer needed for a two-node cluster like
-  this one.
-
-### Lock it down (optional)
-
-Verda has no cloud-level firewall, so restrict inbound traffic with `ufw`
-on each node to your own IP range once you're done experimenting, e.g. on
-`cp1`:
+or by patching the service to `NodePort`/`LoadBalancer` if you want it
+reachable without a tunnel (RKE2's bundled `servicelb`, in `verda-vm-infra`,
+will bind a `LoadBalancer` service directly to a node's public IP):
 
 ```bash
-ssh root@<cp1-ip> '
-  ufw allow from <your-ip>/32 to any port 22,6443 proto tcp
-  ufw allow 6443/tcp                       # API server, node-to-node — kube-proxy is disabled, Cilium needs this directly
-  ufw allow 10250/tcp                      # kubelet, node-to-node
-  ufw allow 9345/tcp                       # RKE2 supervisor, node-to-node
-  ufw allow 8472/udp                       # Cilium VXLAN, node-to-node
-  ufw default deny incoming
-  ufw --force enable
-'
+kubectl --kubeconfig ~/verda_kubeconfig.yaml -n argocd patch svc argocd-server -p '{"spec": {"type": "LoadBalancer"}}'
 ```
 
-Open additional ports (NodePort range, 80/443) only as needed, and repeat
-with the equivalent rules on `worker1` (skip the `6443` rule there).
+(`~/verda_kubeconfig.yaml` comes from `just generate` in `verda-vm-infra` —
+see that repo's README.)
 
-## 5. Clean up
+## 4. Clean up
 
 From the `verda-cloud` root:
 
@@ -161,70 +110,36 @@ From the `verda-cloud` root:
 just k8s-destroy
 ```
 
-This only removes Terraform's bootstrap bookkeeping (the `null_resource`s)
-from state — it does **not** uninstall RKE2 from the VMs, since that was a
-one-off remote command, not a resource Terraform manages the lifecycle of.
-To actually remove Kubernetes from a node:
-
-```bash
-ssh root@<ip> /usr/local/bin/rke2-uninstall.sh   # or rke2-agent-uninstall.sh on the worker
-```
-
-Destroying the VMs themselves (`just vm-destroy`, or `just destroy` for
-both repos in order) removes everything at once, uninstall script or not.
+Argo CD (`helm_release.argocd`) is a real Terraform-managed resource, so
+this properly uninstalls it (`helm uninstall` under the hood). Destroying
+the VMs themselves (`just vm-destroy` in `verda-vm-infra`, or
+`just destroy` for both repos in order) removes everything at once
+regardless.
 
 ## Troubleshooting
 
-- **`apply` hangs or times out connecting:** Confirm the VM is actually up
-  and SSH-reachable: `ssh -i <key> root@<ip>`. The `connection` block
-  retries for 5 minutes, so a VM still booting will eventually succeed —
-  but a wrong IP, wrong key, or a `ufw` rule blocking your IP will not.
-- **Node stuck `NotReady` or `kubectl` can't connect:** SSH in and check
-  the install log and service status:
+- **`helm_release.argocd` fails with a connection error (`dial tcp ...
+  connect: connection refused`, `no such host`, or similar):** The `helm`
+  provider couldn't read the kubeconfig at `kubeconfig_path`, or it's
+  stale/empty. Confirm `verda-vm-infra` has actually been applied
+  (`just vm-apply`) — it's the one that generates that file — and that
+  `kubeconfig_path` points at the right location
+  (`echo $TF_VAR_kubeconfig_path`, or the default sibling path).
+- **Argo CD pods stuck `Pending`/`ContainerCreating`/`ImagePullBackOff`
+  after a successful apply:** Check directly:
 
   ```bash
-  ssh root@<ip> tail -n 100 /var/log/rke2-install.log
-  ssh root@<ip> journalctl -u rke2-server -f   # on cp1
-  ssh root@<ip> journalctl -u rke2-agent -f    # on worker1
+  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n argocd get pods
   ```
 
-- **Nodes stay `NotReady`, or pods stuck `ContainerCreating`/`Pending` with
-  no Cilium pods running:** Check `kubectl get pods -n kube-system -l
-  k8s-app=cilium` and `ssh root@<cp1-ip> journalctl -u rke2-server | grep -i
-  helm`. Since `disable-kube-proxy: true` is set, `cilium-agent` needs
-  direct access to the API server at the `k8sServiceHost`/`k8sServicePort`
-  set in the `rke2-cilium` `HelmChartConfig` (cp1's public IP at install
-  time, port `6443`) — if `cp1`'s IP changed since `cilium-agent` started,
-  or a `ufw` rule blocks `6443` node-to-node, Cilium can't reach the API
-  server and nothing comes up.
-- **Worker never joins:** Confirm the control-plane IP actually points at a
-  running `rke2-server` and that the worker can reach it on `:9345` (not
-  just `:22`) — a `ufw` rule on `cp1` that only opens `22` and `6443` would
-  block this. Since the target host and rendered script haven't changed, a
-  plain re-apply won't retry it — force it with (from this directory):
-  `terraform apply -replace=module.rke2_agent.null_resource.bootstrap`.
-- **A VM was replaced and got a new IP:** Just re-run `just k8s-apply` —
-  the IP comes from `verda-vm-infra`'s state on every plan, and it's part
-  of each module's trigger, so Terraform picks up the new address and
-  reruns the install automatically.
+  The `helm_release` doesn't wait on Cilium pods being `Ready` — if the
+  CNI is still coming up when Argo CD's pods get scheduled, they'll sit
+  `Pending`/`ContainerCreating` until it does; no action needed, just wait
+  and re-check.
 - **`Error: Unsupported attribute ... no attribute named "cp1_ip"`:**
-  `verda-vm-infra` hasn't been applied yet (its state has no outputs) —
-  run `just vm-apply` from the `verda-cloud` root first.
-- **`Error: Unable to find remote state` / no such file reading the remote
-  state:** `tfstate_location` isn't pointed at the right file — nothing
-  exists there at all. If you ran `terraform apply` directly instead of
-  `just k8s-apply`, use the Justfile instead, or export
-  `TF_VAR_tfstate_location` yourself to the real path first.
-- **`remote-exec provisioner error ... Process exited with status 22`:**
-  This is `curl`'s own exit code for an HTTP failure (`--fail`), surfacing
-  from inside `get.rke2.io`'s install script — check
-  `ssh root@<ip> tail -n 60 /var/log/rke2-install.log` for the actual URL
-  that 404'd. If it's
-  `.../releases/download/stable/sha256sum-amd64.txt`, that means
-  `rke2_version` was left empty and the install script's "resolve the
-  stable channel" call to `update.rke2.io/v1-release/channels/stable` came
-  back 404 — an upstream RKE2 outage, not this repo. `rke2_version`
-  defaults to a pinned tag specifically to avoid depending on that
-  endpoint; if you've overridden it to `""`, un-override it, or set it to
-  another concrete tag from
-  `https://github.com/rancher/rke2/releases`.
+  Only affects `argocd_admin_password_command`. `verda-vm-infra` hasn't
+  been applied yet (its state has no outputs) — run `just vm-apply` from
+  the `verda-cloud` root first.
+- **`Error: Unable to find remote state` / no such file reading the
+  remote state:** Same cause as above, but more literal — nothing exists
+  at `tfstate_location` at all.

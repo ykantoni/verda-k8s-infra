@@ -1,41 +1,35 @@
 variable "ssh_user" {
-  description = "SSH user used to connect to both nodes."
+  description = "SSH user used to connect to the control-plane node (only for argocd_admin_password_command)."
   type        = string
   default     = "root"
 }
 
 variable "ssh_private_key_path" {
-  description = "Path to the private key matching the public key verda-vm-infra installed on the VMs."
+  description = "Path to the private key matching the public key verda-vm-infra installed on the VMs (only for argocd_admin_password_command)."
   type        = string
   default     = "~/.ssh/id_ed25519"
 }
 
-variable "rke2_version" {
-  description = "RKE2 version to install, e.g. v1.31.4+rke2r1. Pinned rather than left empty: the install script's \"latest stable\" auto-resolution depends on update.rke2.io/v1-release/channels, which has been returning 404 (an upstream outage, not this repo) — pinning a real tag bypasses it entirely."
-  type        = string
-  default     = "v1.37.1+rke2r1"
-}
-
 variable "tfstate_location" {
-  description = "Path to verda-vm-infra's terraform.tfstate, read for cp1_ip/worker1_ip. Defaults to ../verda-vm-infra/terraform.tfstate (sibling checkout). Override with the TF_VAR_tfstate_location environment variable (Terraform's standard env var convention — plain TFSTATE_LOCATION is not read directly)."
+  description = "Path to verda-vm-infra's terraform.tfstate, read for cp1_ip (used by argocd_admin_password_command). Defaults to ../verda-vm-infra/terraform.tfstate (sibling checkout). Override with the TF_VAR_tfstate_location environment variable, not here."
   type        = string
   default     = null
 }
 
-variable "pod_cidr" {
-  description = "Pod IP address range (cluster-cidr)."
+variable "kubeconfig_path" {
+  description = "Path to the kubeconfig verda-vm-infra generates, used to configure the helm provider. Defaults to ../verda-vm-infra/.terraform-kubeconfig.yaml (sibling checkout). Override with the TF_VAR_kubeconfig_path environment variable, not here."
   type        = string
-  default     = "1.1.0.0/16"
+  default     = null
 }
 
-variable "service_cidr" {
-  description = "Service IP address range (service-cidr)."
+variable "argocd_namespace" {
+  description = "Kubernetes namespace to install Argo CD into."
   type        = string
-  default     = "2.2.0.0/16"
+  default     = "argocd"
 }
 
-variable "cilium_cluster_name" {
-  description = "Cilium's cluster identity name (cluster.name Helm value)."
+variable "argocd_chart_version" {
+  description = "argo-cd Helm chart version to install (chart versioning is independent of the app version — see https://artifacthub.io/packages/helm/argo/argo-cd for the mapping). Chart 10.10.1 installs app v3.5.4."
   type        = string
-  default     = "verdaclu"
+  default     = "10.10.1"
 }
