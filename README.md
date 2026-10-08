@@ -42,15 +42,14 @@ a VM that's already running.
 
 This repo reads the control-plane and worker IPs directly out of
 `verda-vm-infra`'s Terraform state (`data "terraform_remote_state" "vm"` in
-[main.tf](main.tf), pointed at `../verda-vm-infra/terraform.tfstate`) — there's
-nothing to copy by hand. That means:
+[main.tf](main.tf)) — there's nothing to copy by hand, provided you use the
+root [Justfile](../Justfile) (`just vm-apply`, see `verda-vm-infra`'s
+README), which also points this repo at the right state file for you via
+`TF_VAR_tfstate_location`.
 
-- `verda-vm-infra` must be applied first, with its state at that relative
-  path — i.e. both repos checked out as sibling directories (true under the
-  `verda-cloud` submodule layout this project uses).
-- If a VM in `verda-vm-infra` is ever replaced and gets a new IP, just
-  re-run `terraform apply` here — the new IP is picked up automatically,
-  no `terraform.tfvars` edit needed.
+If a VM in `verda-vm-infra` is ever replaced and gets a new IP, just re-run
+`just k8s-apply` — the new IP is picked up automatically, no
+`terraform.tfvars` edit needed.
 
 ## 2. Configure
 
@@ -62,15 +61,23 @@ cp terraform.tfvars.example terraform.tfvars
 | --- | --- | --- |
 | `ssh_user` | SSH user on both VMs | `root` |
 | `ssh_private_key_path` | Private key matching the public key installed on the VMs | `~/.ssh/id_ed25519` |
-| `rke2_version` | RKE2 version, e.g. `v1.31.4+rke2r1`. Empty installs the latest stable | `""` |
+| `rke2_version` | RKE2 version to install | `v1.37.1+rke2r1` |
+| `tfstate_location` | Path to verda-vm-infra's `terraform.tfstate`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
 
 ## 3. Deploy
 
+From the `verda-cloud` root:
+
 ```bash
-terraform init
-terraform plan
-terraform apply
+just k8s-init
+just k8s-apply
 ```
+
+(Or, inside this directory directly: `terraform init && terraform plan &&
+terraform apply` — but then `tfstate_location` falls back to its plain
+relative default instead of the Justfile's computed absolute path, so make
+sure that still resolves correctly for your checkout, or export
+`TF_VAR_tfstate_location` yourself first.)
 
 Unlike a boot-time startup script, this blocks until each install finishes
 over SSH — when `apply` completes, RKE2 is already installed and the
@@ -79,19 +86,23 @@ before nodes show `Ready`.
 
 ## 4. Connect to the cluster from outside Verda Cloud
 
-Pull a working kubeconfig — this rewrites the server address from
-`127.0.0.1` to the control-plane's public IP, and its TLS certificate
-already includes that IP (the install script sets `tls-san`), so no
+```bash
+just k8s-config
+```
+
+This writes `~/kubeconfig.yaml` — in your home directory, regardless of
+which directory you ran it from — rewriting the server address from
+`127.0.0.1` to the control-plane's public IP. Its TLS certificate already
+includes that IP (the install script sets `tls-san`), so no
 `--insecure-skip-tls-verify` is needed:
 
 ```bash
-eval "$(terraform output -raw kubeconfig_command)"
-kubectl --kubeconfig kubeconfig.yaml get nodes
+kubectl --kubeconfig ~/kubeconfig.yaml get nodes
 ```
 
 You should see both nodes `Ready` within a minute or so. Point any
 kubectl-compatible tool (k9s, Lens, Helm, CI pipelines) at
-`kubeconfig.yaml`, or merge it into `~/.kube/config`.
+`~/kubeconfig.yaml`, or merge it into `~/.kube/config`.
 
 The API server (`terraform output api_server_url`) listens on `:6443` and
 is reachable the same way from anywhere with network access to the IP —
@@ -132,17 +143,23 @@ with the equivalent rules on `worker1` (skip the `6443` rule there).
 
 ## 5. Clean up
 
-`terraform destroy` here only removes Terraform's bootstrap bookkeeping
-(the `null_resource`s) from state — it does **not** uninstall RKE2 from the
-VMs, since that was a one-off remote command, not a resource Terraform
-manages the lifecycle of. To actually remove Kubernetes from a node:
+From the `verda-cloud` root:
+
+```bash
+just k8s-destroy
+```
+
+This only removes Terraform's bootstrap bookkeeping (the `null_resource`s)
+from state — it does **not** uninstall RKE2 from the VMs, since that was a
+one-off remote command, not a resource Terraform manages the lifecycle of.
+To actually remove Kubernetes from a node:
 
 ```bash
 ssh root@<ip> /usr/local/bin/rke2-uninstall.sh   # or rke2-agent-uninstall.sh on the worker
 ```
 
-Destroying the VMs themselves (in `verda-vm-infra`) removes everything at
-once, uninstall script or not.
+Destroying the VMs themselves (`just vm-destroy`, or `just destroy` for
+both repos in order) removes everything at once, uninstall script or not.
 
 ## Troubleshooting
 
@@ -163,17 +180,30 @@ once, uninstall script or not.
   running `rke2-server` and that the worker can reach it on `:9345` (not
   just `:22`) — a `ufw` rule on `cp1` that only opens `22` and `6443` would
   block this. Since the target host and rendered script haven't changed, a
-  plain re-apply won't retry it — force it with:
+  plain re-apply won't retry it — force it with (from this directory):
   `terraform apply -replace=module.rke2_agent.null_resource.bootstrap`.
-- **A VM was replaced and got a new IP:** Just re-run `terraform apply` —
+- **A VM was replaced and got a new IP:** Just re-run `just k8s-apply` —
   the IP comes from `verda-vm-infra`'s state on every plan, and it's part
   of each module's trigger, so Terraform picks up the new address and
   reruns the install automatically.
 - **`Error: Unsupported attribute ... no attribute named "cp1_ip"`:**
-  `verda-vm-infra` hasn't been applied yet (its state has no outputs), or
-  its `terraform.tfstate` isn't where this repo expects
-  (`../verda-vm-infra/terraform.tfstate`, relative to this directory).
-  Apply `verda-vm-infra` first, or fix the sibling checkout.
-- **`Error: ... no such file or directory` reading the remote state:**
-  Same cause as above, but `verda-vm-infra` hasn't even been `init`'d/applied
-  once yet — its state file doesn't exist at all.
+  `verda-vm-infra` hasn't been applied yet (its state has no outputs) —
+  run `just vm-apply` from the `verda-cloud` root first.
+- **`Error: Unable to find remote state` / no such file reading the remote
+  state:** `tfstate_location` isn't pointed at the right file — nothing
+  exists there at all. If you ran `terraform apply` directly instead of
+  `just k8s-apply`, use the Justfile instead, or export
+  `TF_VAR_tfstate_location` yourself to the real path first.
+- **`remote-exec provisioner error ... Process exited with status 22`:**
+  This is `curl`'s own exit code for an HTTP failure (`--fail`), surfacing
+  from inside `get.rke2.io`'s install script — check
+  `ssh root@<ip> tail -n 60 /var/log/rke2-install.log` for the actual URL
+  that 404'd. If it's
+  `.../releases/download/stable/sha256sum-amd64.txt`, that means
+  `rke2_version` was left empty and the install script's "resolve the
+  stable channel" call to `update.rke2.io/v1-release/channels/stable` came
+  back 404 — an upstream RKE2 outage, not this repo. `rke2_version`
+  defaults to a pinned tag specifically to avoid depending on that
+  endpoint; if you've overridden it to `""`, un-override it, or set it to
+  another concrete tag from
+  `https://github.com/rancher/rke2/releases`.

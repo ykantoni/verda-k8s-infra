@@ -1,11 +1,16 @@
 # Reads cp1/worker1's IPs straight from verda-vm-infra's state, so there's
 # nothing to copy by hand. Assumes the two repos stay checked out as sibling
-# directories (true under the verda-cloud submodule layout).
+# directories (true under the verda-cloud submodule layout), unless
+# overridden via TF_VAR_tfstate_location.
+locals {
+  tfstate_location = coalesce(var.tfstate_location, "${path.module}/../verda-vm-infra/terraform.tfstate")
+}
+
 data "terraform_remote_state" "vm" {
   backend = "local"
 
   config = {
-    path = "${path.module}/../verda-vm-infra/terraform.tfstate"
+    path = local.tfstate_location
   }
 }
 
