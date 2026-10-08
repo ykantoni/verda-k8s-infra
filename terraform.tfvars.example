@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars and adjust as needed.
+# cp_ip/worker_ip are not variables here — they're read automatically from
+# verda-vm-infra's state (see main.tf's terraform_remote_state data source).
+ssh_user              = "root"
+ssh_private_key_path  = "~/.ssh/id_ed25519"
+rke2_version          = ""

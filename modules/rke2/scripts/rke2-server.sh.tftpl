@@ -1,0 +1,28 @@
+#!/bin/bash
+# Bootstraps the RKE2 control-plane node. Run once over SSH by Terraform.
+set -euo pipefail
+
+exec > /var/log/rke2-install.log 2>&1
+
+PUBLIC_IP="$(curl -fsSL -4 --max-time 5 https://ifconfig.me || hostname -I | awk '{print $1}')"
+
+curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE="server" INSTALL_RKE2_VERSION="${rke2_version}" sh -
+
+mkdir -p /etc/rancher/rke2
+cat > /etc/rancher/rke2/config.yaml <<CONFIG
+token: "${token}"
+tls-san:
+  - "$PUBLIC_IP"
+write-kubeconfig-mode: "0644"
+CONFIG
+
+systemctl enable rke2-server.service
+systemctl start rke2-server.service
+
+ln -sf /var/lib/rancher/rke2/bin/kubectl /usr/local/bin/kubectl
+ln -sf /var/lib/rancher/rke2/bin/crictl /usr/local/bin/crictl
+
+cat > /etc/profile.d/rke2.sh <<'PROFILE'
+export KUBECONFIG=/etc/rancher/rke2/rke2.yaml
+export PATH="$PATH:/var/lib/rancher/rke2/bin"
+PROFILE
