@@ -14,11 +14,16 @@ gets installed.
 
 ## Module structure
 
-[`modules/argocd`](modules/argocd) is a thin wrapper around a single
-`helm_release` resource. It takes no connection details of its own — the
-root module configures the `helm` provider and passes it in
-(`providers = { helm = helm }`), the same way any Terraform module
-receives a provider from its caller.
+[`modules/argocd`](modules/argocd) does two things:
+
+- `helm_release.argocd` — installs Argo CD itself. It takes no connection
+  details of its own — the root module configures the `helm` provider and
+  passes it in (`providers = { helm = helm }`), the same way any Terraform
+  module receives a provider from its caller.
+- `null_resource.root_app` — `kubectl apply`s one "app of apps" root
+  `Application` over SSH (same pattern as the RKE2 bootstrap in
+  `verda-vm-infra`), pointing Argo CD at this repo's [`argo-apps/`](argo-apps)
+  directory. See below.
 
 ### How the `helm` provider finds the cluster
 
@@ -55,6 +60,9 @@ cp terraform.tfvars.example terraform.tfvars
 | `ssh_private_key_path` | Private key matching the public key `verda-vm-infra` installed (only for `argocd_admin_password_command`) | `~/.ssh/id_ed25519` |
 | `argocd_namespace` | Kubernetes namespace to install Argo CD into | `argocd` |
 | `argocd_chart_version` | `argo-cd` Helm chart version (chart versioning tracks independently of the app version — 10.10.1 installs app v3.5.4) | `10.10.1` |
+| `argo_apps_git_repo_url` | Git repo the app-of-apps root `Application` watches | `https://github.com/ykantoni/verda-k8s-infra.git` |
+| `argo_apps_git_revision` | Git revision (branch, tag, or `HEAD`) it tracks | `HEAD` |
+| `argo_apps_path` | Path within that repo containing child `Application` manifests | `argo-apps` |
 | `tfstate_location` | Path to `verda-vm-infra`'s `terraform.tfstate`, read for `cp1_ip`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
 | `kubeconfig_path` | Path to the kubeconfig `verda-vm-infra` generates. Set via `TF_VAR_kubeconfig_path` (the Justfile does this for you), not here | `../verda-vm-infra/.terraform-kubeconfig.yaml` |
 
@@ -102,7 +110,43 @@ kubectl --kubeconfig ~/verda_kubeconfig.yaml -n argocd patch svc argocd-server -
 (`~/verda_kubeconfig.yaml` comes from `just generate` in `verda-vm-infra` —
 see that repo's README.)
 
-## 4. Clean up
+## 4. argo-apps: GitOps-managed add-ons
+
+[`argo-apps/`](argo-apps) holds Argo CD `Application` manifests. The root
+"app of apps" (`null_resource.root_app`, applied once during `k8s-apply`)
+points Argo CD at this directory with `recurse: true` and automated
+sync/prune/self-heal — so adding, editing or removing a file here and
+pushing it is enough; no `terraform apply` needed per app. Currently:
+
+- **[`nvidia-gpu-operator.yaml`](argo-apps/nvidia-gpu-operator.yaml)** —
+  NVIDIA GPU Operator (driver + container toolkit), namespace
+  `gpu-operator`. These VMs are CPU-only instance types by default, so the
+  driver/toolkit DaemonSets will sit idle with nothing to attach to until
+  a GPU-equipped node actually joins the cluster — that's expected, not a
+  failure.
+- **[`openbao.yaml`](argo-apps/openbao.yaml)** — [OpenBao](https://openbao.org/)
+  (open-source Vault fork) in **standalone** mode (not HA — with only 2
+  nodes, Raft HA would need quorum from both on every write, i.e. zero
+  fault tolerance, so standalone is the better fit here), namespace
+  `openbao`. Helm/Argo CD can install it, but **cannot initialize or
+  unseal it** — that's a deliberate manual step:
+
+  ```bash
+  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao exec -it openbao-0 -- bao operator init
+  # save the unseal keys and root token it prints, then:
+  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao exec -it openbao-0 -- bao operator unseal
+  ```
+
+- **[`external-secrets.yaml`](argo-apps/external-secrets.yaml)** — [External
+  Secrets Operator](https://external-secrets.io/), namespace
+  `external-secrets`. Installed with chart defaults (CRDs included); it
+  does nothing until you create a `SecretStore`/`ClusterSecretStore`
+  pointing it at a backend (e.g. the OpenBao instance above, once
+  unsealed) and an `ExternalSecret` referencing it — neither is created
+  here, since that needs real auth configured against an already-unsealed
+  OpenBao.
+
+## 5. Clean up
 
 From the `verda-cloud` root:
 
