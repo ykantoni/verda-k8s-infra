@@ -26,6 +26,24 @@ variable "server_url" {
   default     = null
 }
 
+variable "pod_cidr" {
+  description = "Pod IP address range (cluster-cidr). Only used for role = \"server\" — the CNI and its CIDRs are cluster-wide settings set once on the server."
+  type        = string
+  default     = "1.1.0.0/16"
+}
+
+variable "service_cidr" {
+  description = "Service IP address range (service-cidr). Only used for role = \"server\"."
+  type        = string
+  default     = "2.2.0.0/16"
+}
+
+variable "cilium_cluster_name" {
+  description = "Cilium's cluster identity name (cluster.name Helm value, used for cluster-mesh/multi-cluster identification). Only used for role = \"server\"."
+  type        = string
+  default     = "verdaclu"
+}
+
 variable "host" {
   description = "Public IP (or hostname) of the already-running VM to bootstrap over SSH."
   type        = string

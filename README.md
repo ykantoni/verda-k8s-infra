@@ -62,6 +62,9 @@ cp terraform.tfvars.example terraform.tfvars
 | `ssh_user` | SSH user on both VMs | `root` |
 | `ssh_private_key_path` | Private key matching the public key installed on the VMs | `~/.ssh/id_ed25519` |
 | `rke2_version` | RKE2 version to install | `v1.37.1+rke2r1` |
+| `pod_cidr` | Pod IP address range (`cluster-cidr`) | `1.1.0.0/16` |
+| `service_cidr` | Service IP address range (`service-cidr`) | `2.2.0.0/16` |
+| `cilium_cluster_name` | Cilium's cluster identity name (`cluster.name` Helm value) | `verdaclu` |
 | `tfstate_location` | Path to verda-vm-infra's `terraform.tfstate`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
 
 ## 3. Deploy
@@ -81,8 +84,16 @@ sure that still resolves correctly for your checkout, or export
 
 Unlike a boot-time startup script, this blocks until each install finishes
 over SSH — when `apply` completes, RKE2 is already installed and the
-services are started. Give the Canal CNI pods a little longer to come up
+services are started. Give the Cilium CNI pods a little longer to come up
 before nodes show `Ready`.
+
+This cluster runs [Cilium](https://cilium.io/) instead of RKE2's default
+Canal, in full kube-proxy replacement mode (RKE2's built-in kube-proxy is
+disabled via `disable-kube-proxy: true`, and Cilium's `kubeProxyReplacement`
+takes over entirely). Pod/service CIDRs and the cluster name are set via
+`pod_cidr`/`service_cidr`/`cilium_cluster_name` (see the variable table
+below) and passed into a `HelmChartConfig` the install script writes for
+RKE2's bundled `rke2-cilium` chart.
 
 ## 4. Connect to the cluster from outside Verda Cloud
 
@@ -130,9 +141,10 @@ on each node to your own IP range once you're done experimenting, e.g. on
 ```bash
 ssh root@<cp1-ip> '
   ufw allow from <your-ip>/32 to any port 22,6443 proto tcp
+  ufw allow 6443/tcp                       # API server, node-to-node — kube-proxy is disabled, Cilium needs this directly
   ufw allow 10250/tcp                      # kubelet, node-to-node
   ufw allow 9345/tcp                       # RKE2 supervisor, node-to-node
-  ufw allow 8472/udp                       # Canal VXLAN, node-to-node
+  ufw allow 8472/udp                       # Cilium VXLAN, node-to-node
   ufw default deny incoming
   ufw --force enable
 '
@@ -176,6 +188,15 @@ both repos in order) removes everything at once, uninstall script or not.
   ssh root@<ip> journalctl -u rke2-agent -f    # on worker1
   ```
 
+- **Nodes stay `NotReady`, or pods stuck `ContainerCreating`/`Pending` with
+  no Cilium pods running:** Check `kubectl get pods -n kube-system -l
+  k8s-app=cilium` and `ssh root@<cp1-ip> journalctl -u rke2-server | grep -i
+  helm`. Since `disable-kube-proxy: true` is set, `cilium-agent` needs
+  direct access to the API server at the `k8sServiceHost`/`k8sServicePort`
+  set in the `rke2-cilium` `HelmChartConfig` (cp1's public IP at install
+  time, port `6443`) — if `cp1`'s IP changed since `cilium-agent` started,
+  or a `ufw` rule blocks `6443` node-to-node, Cilium can't reach the API
+  server and nothing comes up.
 - **Worker never joins:** Confirm the control-plane IP actually points at a
   running `rke2-server` and that the worker can reach it on `:9345` (not
   just `:22`) — a `ufw` rule on `cp1` that only opens `22` and `6443` would

@@ -21,3 +21,21 @@ variable "tfstate_location" {
   type        = string
   default     = null
 }
+
+variable "pod_cidr" {
+  description = "Pod IP address range (cluster-cidr)."
+  type        = string
+  default     = "1.1.0.0/16"
+}
+
+variable "service_cidr" {
+  description = "Service IP address range (service-cidr)."
+  type        = string
+  default     = "2.2.0.0/16"
+}
+
+variable "cilium_cluster_name" {
+  description = "Cilium's cluster identity name (cluster.name Helm value)."
+  type        = string
+  default     = "verdaclu"
+}

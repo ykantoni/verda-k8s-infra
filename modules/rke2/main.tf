@@ -9,6 +9,9 @@ locals {
   script = var.role == "server" ? templatefile("${path.module}/scripts/rke2-server.sh.tftpl", {
     rke2_version = var.rke2_version
     token        = var.token
+    pod_cidr     = var.pod_cidr
+    service_cidr = var.service_cidr
+    cluster_name = var.cilium_cluster_name
     }) : templatefile("${path.module}/scripts/rke2-agent.sh.tftpl", {
     rke2_version = var.rke2_version
     token        = var.token

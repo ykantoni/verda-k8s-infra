@@ -29,6 +29,9 @@ module "rke2_server" {
   host                 = data.terraform_remote_state.vm.outputs.cp1_ip
   ssh_user             = var.ssh_user
   ssh_private_key_path = var.ssh_private_key_path
+  pod_cidr             = var.pod_cidr
+  service_cidr         = var.service_cidr
+  cilium_cluster_name  = var.cilium_cluster_name
 }
 
 module "rke2_agent" {
