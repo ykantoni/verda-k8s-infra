@@ -9,3 +9,38 @@ variable "chart_version" {
   type        = string
   default     = "10.10.1"
 }
+
+variable "host" {
+  description = "Public IP (or hostname) of the control-plane node, used over SSH to kubectl-apply the app-of-apps root Application."
+  type        = string
+}
+
+variable "ssh_user" {
+  description = "SSH user used to connect to the node."
+  type        = string
+  default     = "root"
+}
+
+variable "ssh_private_key_path" {
+  description = "Path to the private key matching the public key installed on the VM."
+  type        = string
+  default     = "~/.ssh/id_ed25519"
+}
+
+variable "git_repo_url" {
+  description = "Git repo Argo CD watches for Application manifests (the app-of-apps root). Must be reachable by the cluster without credentials if public, or paired with a repo credentials Secret if private."
+  type        = string
+  default     = "https://github.com/ykantoni/verda-k8s-infra.git"
+}
+
+variable "git_revision" {
+  description = "Git revision (branch, tag, or HEAD) the root Application tracks."
+  type        = string
+  default     = "HEAD"
+}
+
+variable "argo_apps_path" {
+  description = "Path within git_repo_url containing child Application manifests — Argo CD syncs everything under it automatically."
+  type        = string
+  default     = "argo-apps"
+}

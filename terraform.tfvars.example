@@ -2,7 +2,10 @@
 # tfstate_location/kubeconfig_path are not set here — they're overridden
 # (if needed at all) via TF_VAR_tfstate_location/TF_VAR_kubeconfig_path,
 # so they stay out of any committed tfvars file. See versions.tf/variables.tf.
-ssh_user              = "root"
-ssh_private_key_path  = "~/.ssh/id_ed25519"
-argocd_namespace      = "argocd"
-argocd_chart_version  = "10.10.1"
+ssh_user                = "root"
+ssh_private_key_path    = "~/.ssh/id_ed25519"
+argocd_namespace        = "argocd"
+argocd_chart_version    = "10.10.1"
+argo_apps_git_repo_url  = "https://github.com/ykantoni/verda-k8s-infra.git"
+argo_apps_git_revision  = "HEAD"
+argo_apps_path          = "argo-apps"
