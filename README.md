@@ -128,14 +128,37 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   (open-source Vault fork) in **standalone** mode (not HA — with only 2
   nodes, Raft HA would need quorum from both on every write, i.e. zero
   fault tolerance, so standalone is the better fit here), namespace
-  `openbao`. Helm/Argo CD can install it, but **cannot initialize or
-  unseal it** — that's a deliberate manual step:
+  `openbao`. Its data volume is backed by Longhorn, which `verda-vm-infra`
+  installs directly (via RKE2's own helm-controller, not Argo CD — see
+  that repo's README) as part of the cluster bootstrap; if that was
+  applied before Longhorn was added there, re-run `just vm-apply` to pick
+  it up, or this pod sits `Pending` the same way anything else needing a
+  `PersistentVolumeClaim` would. Helm/Argo CD can install OpenBao itself,
+  but **cannot initialize or unseal it** — that's a deliberate manual
+  step:
 
   ```bash
   ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao exec -it openbao-0 -- bao operator init
-  # save the unseal keys and root token it prints, then:
-  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao exec -it openbao-0 -- bao operator unseal
+  # save the unseal keys and root token it prints, then run `bao operator
+  # unseal` 3 times (threshold 3-of-5), each time pasting a different key
+  # at the hidden prompt.
   ```
+
+  OpenBao re-seals on every pod restart (standalone/file storage doesn't
+  auto-unseal), so you'll repeat the unseal step whenever that happens.
+  [`scripts/unseal-openbao.sh`](scripts/unseal-openbao.sh) (`just
+  unseal-openbao` from the `verda-cloud` root) automates this for lab use:
+  it waits for `openbao-0` to be `Running`, does nothing if already
+  unsealed, and otherwise reads 3 keys from `~/.openbao-unseal-keys`
+  (gitignored by virtue of living outside this repo entirely — one key
+  per line, `#`-prefixed lines ignored) and runs the 3 unseal calls. This
+  is a deliberate trade-off: storing all the keys needed to unseal in one
+  plaintext file defeats Shamir secret sharing's actual security property
+  (no single place holds enough keys alone) in exchange for not having to
+  unseal by hand after every restart — reasonable for this lab, not for
+  an instance holding secrets you actually need to protect from whoever
+  has access to this machine (use a real auto-unseal, e.g. a Transit
+  seal, for that).
 
 - **[`external-secrets.yaml`](argo-apps/external-secrets.yaml)** — [External
   Secrets Operator](https://external-secrets.io/), namespace
@@ -179,6 +202,41 @@ regardless.
 
 ## Troubleshooting
 
+- **`external-secrets` Application stuck `OutOfSync`/`Degraded`, with
+  `CustomResourceDefinition ... is invalid: metadata.annotations: Too long:
+  may not be more than 262144 bytes` and pods (`external-secrets`,
+  `external-secrets-cert-controller`) crash-looping or failing healthz with
+  `no matches for kind "ClusterSecretStore"`/`"SecretStore"`:** The
+  `SecretStore`/`ClusterSecretStore` CRDs in this chart are large enough
+  that Argo CD's default client-side apply (storing the full manifest in a
+  `last-applied-configuration` annotation) exceeds Kubernetes' 256 KiB
+  annotation limit. `external-secrets.yaml` sets `ServerSideApply=true` to
+  avoid this — if you're hitting it anyway, confirm that sync option is
+  actually present on the live `Application` (`kubectl get application
+  external-secrets -n argocd -o jsonpath='{.spec.syncPolicy.syncOptions}'`)
+  and, if the CRDs are still missing, apply them directly once to unblock:
+
+  ```bash
+  curl -sSL https://raw.githubusercontent.com/external-secrets/external-secrets/v<chart-app-version>/deploy/crds/bundle.yaml \
+    | kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml apply --server-side -f -
+  kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n external-secrets rollout restart deployment external-secrets external-secrets-cert-controller
+  ```
+
+- **A `PersistentVolumeClaim` (e.g. `data-openbao-0`) stays `Pending`
+  even after Longhorn is up** (check with
+  `ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml get pods -n longhorn-system`,
+  see `verda-vm-infra`'s README): Kubernetes only assigns a default
+  `StorageClass` to a PVC *when it's created* — a PVC created before
+  Longhorn existed has `storageClassName: ""` baked in and will never
+  retroactively adopt the new default. Delete the stuck PVC (and its
+  pod, so the StatefulSet recreates both):
+
+  ```bash
+  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao delete pod openbao-0 pvc data-openbao-0
+  ```
+
+  The pod comes back, creates a fresh PVC, and this time picks up
+  Longhorn's default class.
 - **`helm_release.argocd` fails with a connection error (`dial tcp ...
   connect: connection refused`, `no such host`, or similar):** The `helm`
   provider couldn't read the kubeconfig at `kubeconfig_path`, or it's
