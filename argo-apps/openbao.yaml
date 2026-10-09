@@ -18,6 +18,9 @@ spec:
             enabled: true
           ha:
             enabled: false
+          service:
+            type: NodePort
+            nodePort: 30092
   destination:
     server: https://kubernetes.default.svc
     namespace: openbao

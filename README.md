@@ -155,7 +155,7 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   cluster or Longhorn volume is rebuilt) means a brand-new, never-`init`'d
   instance with no keys yet at all — re-running the same manual steps
   every time gets old fast for a lab. [`scripts/unseal-openbao.sh`](scripts/unseal-openbao.sh)
-  (`just unseal-openbao` from the `verda-cloud` root) automates all of
+  (`just unseal` from the `verda-cloud` root) automates all of
   this: it waits for `openbao-0` to be `Running`; does nothing if already
   unsealed; if never initialized, runs `bao operator init` itself and
   **overwrites** `~/.openbao-unseal-keys` with the new keys (also printed
@@ -178,7 +178,10 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   pointing it at a backend (e.g. the OpenBao instance above, once
   unsealed) and an `ExternalSecret` referencing it — neither is created
   here, since that needs real auth configured against an already-unsealed
-  OpenBao.
+  OpenBao. Its `server.service` is set to `NodePort`/`30092`, so once
+  unsealed it's reachable directly at `http://<cp1-ip>:30092` — no tunnel
+  needed. Root token: the one `scripts/unseal-openbao.sh` saved to
+  `~/.openbao-unseal-keys` (see above).
 - **[`kube-prometheus-stack.yaml`](argo-apps/kube-prometheus-stack.yaml)** —
   Prometheus + Grafana (plus Alertmanager, node-exporter and
   kube-state-metrics), namespace `monitoring`. One chart rather than two
@@ -187,15 +190,25 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   would need a manual datasource-config step afterward. Installed with
   chart defaults: no persistent storage for either Prometheus or Grafana
   (data is lost on pod restart — fine for exploring, not for anything you
-  need to keep). Grafana's `ClusterIP` service and auto-generated admin
-  password work the same way Argo CD's do:
+  need to keep). Both `prometheus.service` and `grafana.service` are set
+  to `NodePort` (`30090`/`30091`), reachable directly — no tunnel needed:
 
   ```bash
+  # http://<cp1-ip>:30090  (Prometheus)
+  # http://<cp1-ip>:30091  (Grafana, username: admin)
   ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d
-  ssh -L 3000:localhost:3000 root@<cp1-ip> \
-    kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
-  # then open http://localhost:3000 (username: admin)
   ```
+
+  (A port-forward works too if you'd rather not expose the NodePort —
+  substitute `kubectl port-forward` the same way the OpenBao entry above
+  describes.)
+
+**All of the NodePorts above** (Argo CD, OpenBao, Prometheus, Grafana) plus
+`verda-vm-infra`'s Longhorn UI NodePort can be listed in one shot, with the
+current cluster's actual IP filled in, by running `just endpoints` from the
+`verda-cloud` root. Same "Lock it down" caveat as Argo CD's section above
+applies to all of them — Verda has no cloud-level firewall, so add `ufw`
+rules for any of these ports you don't want open to the whole internet.
 
 ## 5. Clean up
 
