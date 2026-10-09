@@ -171,6 +171,15 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   to this machine (use a real auto-unseal, e.g. a Transit seal, for
   that).
 
+  Its `server.service` is set to `NodePort`/`30092`, so once unsealed it's
+  reachable directly at `http://<cp1-ip>:30092` — no tunnel needed. Root
+  token: the one `scripts/unseal-openbao.sh` saved to
+  `~/.openbao-unseal-keys` (see above). It also gets an `HTTPRoute`
+  (`gateway-routes/openbao-httproute.yaml`, host `openbao.lab`) through
+  the shared Gateway described below — a second, additive way to reach
+  it at `http://openbao.lab:<port>/` instead of the NodePort (`just
+  endpoints`, from the `verda-cloud` root, prints the actual port).
+
 - **[`external-secrets.yaml`](argo-apps/external-secrets.yaml)** — [External
   Secrets Operator](https://external-secrets.io/), namespace
   `external-secrets`. Installed with chart defaults (CRDs included); it
@@ -178,10 +187,7 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   pointing it at a backend (e.g. the OpenBao instance above, once
   unsealed) and an `ExternalSecret` referencing it — neither is created
   here, since that needs real auth configured against an already-unsealed
-  OpenBao. Its `server.service` is set to `NodePort`/`30092`, so once
-  unsealed it's reachable directly at `http://<cp1-ip>:30092` — no tunnel
-  needed. Root token: the one `scripts/unseal-openbao.sh` saved to
-  `~/.openbao-unseal-keys` (see above).
+  OpenBao.
 - **[`kube-prometheus-stack.yaml`](argo-apps/kube-prometheus-stack.yaml)** —
   Prometheus + Grafana (plus Alertmanager, node-exporter and
   kube-state-metrics), namespace `monitoring`. One chart rather than two
@@ -201,7 +207,33 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
 
   (A port-forward works too if you'd rather not expose the NodePort —
   substitute `kubectl port-forward` the same way the OpenBao entry above
-  describes.)
+  describes.) Grafana and Prometheus also each get an `HTTPRoute`
+  (`gateway-routes/monitoring-httproutes.yaml`, hosts `grafana.lab` /
+  `prometheus.lab`) through the shared Gateway described below.
+
+- **[`gateway-routes.yaml`](argo-apps/gateway-routes.yaml)** — unlike the
+  apps above, this points Argo CD at a **directory** of plain manifests
+  in this same repo ([`gateway-routes/`](gateway-routes)) rather than an
+  external Helm chart, since `HTTPRoute`s aren't a Helm chart install.
+  It holds the OpenBao and Grafana/Prometheus `HTTPRoute`s mentioned
+  above, each attached to the single shared `Gateway`
+  (`lab-gateway`, namespace `kube-system`) that `verda-vm-infra` creates
+  as part of its RKE2 bootstrap (see that repo's README for the full
+  Gateway API explanation — Cilium is the Gateway controller, no extra
+  ingress controller needed). Longhorn's `HTTPRoute` lives over there
+  too, next to Longhorn itself, since it isn't Argo CD-managed.
+
+  This is purely additive — every NodePort documented above keeps
+  working unchanged. The only new thing it adds is a second way to reach
+  OpenBao/Grafana/Prometheus (and Longhorn's UI), all multiplexed by
+  hostname through one shared NodePort Service instead of one NodePort
+  each (it's a `NodePort`, not a `LoadBalancer`, because Verda terminates
+  ports 80/443 on every VM's public IP at its own edge — see
+  `verda-vm-infra`'s README for the full explanation and why the port
+  number can't be pinned to a fixed value). Since Verda gives you a bare
+  IP with no real DNS, add the hostnames to `/etc/hosts` yourself — see
+  `verda-vm-infra`'s README for the exact line to add — and get the
+  live port number from `just endpoints`.
 
 **All of the NodePorts above** (Argo CD, OpenBao, Prometheus, Grafana) plus
 `verda-vm-infra`'s Longhorn UI NodePort can be listed in one shot, with the
