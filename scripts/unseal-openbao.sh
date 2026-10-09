@@ -1,11 +1,11 @@
 #!/bin/bash
-# Lab-only convenience: auto-unseals OpenBao using keys stored in a local
-# plaintext file. This deliberately trades away Shamir secret sharing's
-# whole point (no single place holds enough keys to unseal alone) for
-# operational convenience. Fine for a personal lab; don't do this if this
-# OpenBao instance ever holds secrets you actually care about protecting
-# from whoever has access to this machine — use a real auto-unseal (e.g.
-# a Transit seal) instead.
+# Lab-only convenience: auto-initializes (if needed) and auto-unseals
+# OpenBao using keys stored in a local plaintext file. This deliberately
+# trades away Shamir secret sharing's whole point (no single place holds
+# enough keys to unseal alone) for operational convenience. Fine for a
+# personal lab; don't do this if this OpenBao instance ever holds secrets
+# you actually care about protecting from whoever has access to this
+# machine — use a real auto-unseal (e.g. a Transit seal) instead.
 #
 # Usage: ./scripts/unseal-openbao.sh
 # Env overrides: KEYS_FILE, NAMESPACE, POD
@@ -14,6 +14,11 @@ set -euo pipefail
 KEYS_FILE="${KEYS_FILE:-$HOME/.openbao-unseal-keys}"
 NAMESPACE="${NAMESPACE:-openbao}"
 POD="${POD:-openbao-0}"
+
+if ! command -v jq >/dev/null 2>&1; then
+  echo "jq is required (to parse 'bao operator init' output) but isn't installed." >&2
+  exit 1
+fi
 
 # Never trust a pre-existing ~/verda_kubeconfig.yaml — it could be stale
 # (pointing at a since-destroyed/recreated cluster with a different IP).
@@ -25,12 +30,6 @@ echo "Exporting a fresh kubeconfig from the currently built cluster..."
 
 KUBECONFIG_PATH="$HOME/verda_kubeconfig.yaml"
 kubectl() { command kubectl --kubeconfig "$KUBECONFIG_PATH" "$@"; }
-
-if [ ! -f "$KEYS_FILE" ]; then
-  echo "Keys file not found: $KEYS_FILE" >&2
-  echo "Create it with one unseal key per line (lines starting with # are ignored)." >&2
-  exit 1
-fi
 
 echo "Waiting for $POD to be Running..."
 for i in $(seq 1 30); do
@@ -52,16 +51,27 @@ fi
 
 # A fresh PVC (new volume, e.g. after the cluster was rebuilt) means this
 # is a brand-new OpenBao that was never `bao operator init`'d — unsealing
-# one of those errors out ("Vault is not initialized") after the very
-# first key, which looks like a partial/confusing failure rather than
-# what it actually is. Keys from a PREVIOUS instance's init are useless
-# here regardless — each init generates an entirely new master key.
+# one of those errors out ("Vault is not initialized"). Keys from a
+# PREVIOUS instance's init are useless here regardless — each init
+# generates an entirely new master key — so auto-init and overwrite the
+# keys file with the new ones rather than trying to unseal with stale keys.
 if echo "$STATUS" | grep -qi "Initialized.*false"; then
-  echo "$POD has never been initialized (this looks like a fresh volume, not a resealed one)." >&2
-  echo "Run the one-time manual init step first, then re-run this script:" >&2
-  echo "  kubectl --kubeconfig $HOME/verda_kubeconfig.yaml -n $NAMESPACE exec -it $POD -- bao operator init" >&2
-  echo "Save the NEW keys it prints to $KEYS_FILE (overwriting the old ones — they're for a different instance now)." >&2
-  exit 1
+  echo "$POD has never been initialized (fresh volume) — initializing automatically..."
+  INIT_JSON="$(kubectl -n "$NAMESPACE" exec "$POD" -- bao operator init -format=json)"
+  NEW_KEYS="$(echo "$INIT_JSON" | jq -r '.unseal_keys_b64[]')"
+  ROOT_TOKEN="$(echo "$INIT_JSON" | jq -r '.root_token')"
+
+  {
+    echo "# OpenBao unseal keys (lab convenience — see verda-k8s-infra's README)."
+    echo "# One key per line. Threshold is 3; only the first 3 non-comment lines are used."
+    echo "$NEW_KEYS"
+    echo "# Root token: $ROOT_TOKEN"
+  } > "$KEYS_FILE"
+  chmod 600 "$KEYS_FILE"
+
+  echo "Initialized. New keys (saved to $KEYS_FILE, back these up somewhere more durable too):"
+  echo "$NEW_KEYS" | sed 's/^/  Unseal key: /'
+  echo "  Root token: $ROOT_TOKEN"
 fi
 
 mapfile -t KEYS < <(grep -vE '^\s*(#|$)' "$KEYS_FILE" | head -n 3)

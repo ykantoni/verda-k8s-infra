@@ -10,6 +10,24 @@ variable "chart_version" {
   default     = "10.10.1"
 }
 
+variable "service_type" {
+  description = "argocd-server Service type. NodePort exposes it directly on every node's public IP without a port-forward/tunnel; set back to ClusterIP to only reach it that way."
+  type        = string
+  default     = "NodePort"
+}
+
+variable "node_port_http" {
+  description = "NodePort for argocd-server's HTTP port (redirects to HTTPS unless server.insecure is set). Only used when service_type = \"NodePort\"."
+  type        = number
+  default     = 30080
+}
+
+variable "node_port_https" {
+  description = "NodePort for argocd-server's HTTPS port. Only used when service_type = \"NodePort\"."
+  type        = number
+  default     = 30443
+}
+
 variable "host" {
   description = "Public IP (or hostname) of the control-plane node, used over SSH to kubectl-apply the app-of-apps root Application."
   type        = string

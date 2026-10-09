@@ -5,6 +5,18 @@ resource "helm_release" "argocd" {
   version          = var.chart_version
   namespace        = var.namespace
   create_namespace = true
+
+  values = [
+    yamlencode({
+      server = {
+        service = {
+          type          = var.service_type
+          nodePortHttp  = var.node_port_http
+          nodePortHttps = var.node_port_https
+        }
+      }
+    })
+  ]
 }
 
 locals {

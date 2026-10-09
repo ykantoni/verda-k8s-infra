@@ -63,6 +63,9 @@ cp terraform.tfvars.example terraform.tfvars
 | `argo_apps_git_repo_url` | Git repo the app-of-apps root `Application` watches | `https://github.com/ykantoni/verda-k8s-infra.git` |
 | `argo_apps_git_revision` | Git revision (branch, tag, or `HEAD`) it tracks | `HEAD` |
 | `argo_apps_path` | Path within that repo containing child `Application` manifests | `argo-apps` |
+| `argocd_service_type` | `argocd-server` Service type — `NodePort` to reach it directly, `ClusterIP` to only reach it via tunnel/your own Ingress | `NodePort` |
+| `argocd_node_port_http` | NodePort for the HTTP port (redirects to HTTPS). Only used when `argocd_service_type = "NodePort"` | `30080` |
+| `argocd_node_port_https` | NodePort for the HTTPS port. Only used when `argocd_service_type = "NodePort"` | `30443` |
 | `tfstate_location` | Path to `verda-vm-infra`'s `terraform.tfstate`, read for `cp1_ip`. Set via `TF_VAR_tfstate_location` (the Justfile does this for you), not here | `../verda-vm-infra/terraform.tfstate` |
 | `kubeconfig_path` | Path to the kubeconfig `verda-vm-infra` generates. Set via `TF_VAR_kubeconfig_path` (the Justfile does this for you), not here | `../verda-vm-infra/.terraform-kubeconfig.yaml` |
 
@@ -84,14 +87,22 @@ yourself first.)
 
 ## 3. Access Argo CD
 
-Argo CD's `argocd-server` is a `ClusterIP` service — not exposed outside
-the cluster by default. Get the initial admin password (username `admin`):
+`argocd-server`'s Service defaults to `NodePort` (`argocd_service_type`;
+see the variable table above), bound to `30080`/`30443` on **every**
+node's public IP — so it's reachable directly, no tunnel needed:
+
+```bash
+# https://<cp1-ip or worker1-ip>:30443
+```
+
+Get the initial admin password (username `admin`):
 
 ```bash
 eval "$(terraform output -raw argocd_admin_password_command)"
 ```
 
-Then reach the UI/API either by tunneling through SSH:
+If you set `argocd_service_type = "ClusterIP"` instead (e.g. to put it
+behind your own Ingress), reach it via SSH tunnel:
 
 ```bash
 ssh -L 8080:localhost:8080 root@<cp1-ip> \
@@ -99,16 +110,11 @@ ssh -L 8080:localhost:8080 root@<cp1-ip> \
 # then open https://localhost:8080
 ```
 
-or by patching the service to `NodePort`/`LoadBalancer` if you want it
-reachable without a tunnel (RKE2's bundled `servicelb`, in `verda-vm-infra`,
-will bind a `LoadBalancer` service directly to a node's public IP):
-
-```bash
-kubectl --kubeconfig ~/verda_kubeconfig.yaml -n argocd patch svc argocd-server -p '{"spec": {"type": "LoadBalancer"}}'
-```
-
-(`~/verda_kubeconfig.yaml` comes from `just generate` in `verda-vm-infra` —
-see that repo's README.)
+**Lock it down**: Verda has no cloud-level firewall (see `verda-vm-infra`'s
+README), so `30080`/`30443` are open to the internet on both nodes by
+default. If you've applied `ufw` rules there, add these two ports (or the
+whole NodePort range `30000-32767`, since other `argo-apps` Services may
+bind one too) for the IPs that should reach them.
 
 ## 4. argo-apps: GitOps-managed add-ons
 
@@ -134,8 +140,8 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   applied before Longhorn was added there, re-run `just vm-apply` to pick
   it up, or this pod sits `Pending` the same way anything else needing a
   `PersistentVolumeClaim` would. Helm/Argo CD can install OpenBao itself,
-  but **cannot initialize or unseal it** — that's a deliberate manual
-  step:
+  but **cannot initialize or unseal it** itself. Helm/Argo CD never do
+  this automatically; by default it's a manual step:
 
   ```bash
   ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n openbao exec -it openbao-0 -- bao operator init
@@ -145,20 +151,25 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   ```
 
   OpenBao re-seals on every pod restart (standalone/file storage doesn't
-  auto-unseal), so you'll repeat the unseal step whenever that happens.
-  [`scripts/unseal-openbao.sh`](scripts/unseal-openbao.sh) (`just
-  unseal-openbao` from the `verda-cloud` root) automates this for lab use:
-  it waits for `openbao-0` to be `Running`, does nothing if already
-  unsealed, and otherwise reads 3 keys from `~/.openbao-unseal-keys`
-  (gitignored by virtue of living outside this repo entirely — one key
-  per line, `#`-prefixed lines ignored) and runs the 3 unseal calls. This
-  is a deliberate trade-off: storing all the keys needed to unseal in one
-  plaintext file defeats Shamir secret sharing's actual security property
-  (no single place holds enough keys alone) in exchange for not having to
-  unseal by hand after every restart — reasonable for this lab, not for
-  an instance holding secrets you actually need to protect from whoever
-  has access to this machine (use a real auto-unseal, e.g. a Transit
-  seal, for that).
+  auto-unseal), and a fresh `PersistentVolumeClaim` (e.g. after the
+  cluster or Longhorn volume is rebuilt) means a brand-new, never-`init`'d
+  instance with no keys yet at all — re-running the same manual steps
+  every time gets old fast for a lab. [`scripts/unseal-openbao.sh`](scripts/unseal-openbao.sh)
+  (`just unseal-openbao` from the `verda-cloud` root) automates all of
+  this: it waits for `openbao-0` to be `Running`; does nothing if already
+  unsealed; if never initialized, runs `bao operator init` itself and
+  **overwrites** `~/.openbao-unseal-keys` with the new keys (also printed
+  to your terminal — back them up somewhere more durable too); then reads
+  3 keys from that file (gitignored by virtue of living outside this repo
+  entirely — one key per line, `#`-prefixed lines ignored) and runs the 3
+  unseal calls. This is a deliberate trade-off: storing all the keys
+  needed to unseal (and now auto-generating/auto-saving them with zero
+  human review) defeats Shamir secret sharing's actual security property
+  (no single place holds enough keys alone) in exchange for never having
+  to do this by hand — reasonable for this lab, not for an instance
+  holding secrets you actually need to protect from whoever has access
+  to this machine (use a real auto-unseal, e.g. a Transit seal, for
+  that).
 
 - **[`external-secrets.yaml`](argo-apps/external-secrets.yaml)** — [External
   Secrets Operator](https://external-secrets.io/), namespace

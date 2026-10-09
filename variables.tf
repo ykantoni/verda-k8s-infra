@@ -51,3 +51,21 @@ variable "argo_apps_path" {
   type        = string
   default     = "argo-apps"
 }
+
+variable "argocd_service_type" {
+  description = "argocd-server Service type. NodePort exposes it directly on every node's public IP without a port-forward/tunnel; set back to ClusterIP to only reach it that way."
+  type        = string
+  default     = "NodePort"
+}
+
+variable "argocd_node_port_http" {
+  description = "NodePort for argocd-server's HTTP port (redirects to HTTPS unless server.insecure is set). Only used when argocd_service_type = \"NodePort\"."
+  type        = number
+  default     = 30080
+}
+
+variable "argocd_node_port_https" {
+  description = "NodePort for argocd-server's HTTPS port. Only used when argocd_service_type = \"NodePort\"."
+  type        = number
+  default     = 30443
+}

@@ -9,3 +9,6 @@ argocd_chart_version    = "10.10.1"
 argo_apps_git_repo_url  = "https://github.com/ykantoni/verda-k8s-infra.git"
 argo_apps_git_revision  = "HEAD"
 argo_apps_path          = "argo-apps"
+argocd_service_type     = "NodePort"
+argocd_node_port_http   = 30080
+argocd_node_port_https  = 30443

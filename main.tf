@@ -28,4 +28,7 @@ module "argocd" {
   git_repo_url         = var.argo_apps_git_repo_url
   git_revision         = var.argo_apps_git_revision
   argo_apps_path       = var.argo_apps_path
+  service_type         = var.argocd_service_type
+  node_port_http       = var.argocd_node_port_http
+  node_port_https      = var.argocd_node_port_https
 }
