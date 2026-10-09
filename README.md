@@ -145,6 +145,23 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   unsealed) and an `ExternalSecret` referencing it — neither is created
   here, since that needs real auth configured against an already-unsealed
   OpenBao.
+- **[`kube-prometheus-stack.yaml`](argo-apps/kube-prometheus-stack.yaml)** —
+  Prometheus + Grafana (plus Alertmanager, node-exporter and
+  kube-state-metrics), namespace `monitoring`. One chart rather than two
+  separate ones, specifically so Grafana comes pre-wired with that
+  Prometheus as its datasource — installing them as independent apps
+  would need a manual datasource-config step afterward. Installed with
+  chart defaults: no persistent storage for either Prometheus or Grafana
+  (data is lost on pod restart — fine for exploring, not for anything you
+  need to keep). Grafana's `ClusterIP` service and auto-generated admin
+  password work the same way Argo CD's do:
+
+  ```bash
+  ssh root@<cp1-ip> kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n monitoring get secret kube-prometheus-stack-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+  ssh -L 3000:localhost:3000 root@<cp1-ip> \
+    kubectl --kubeconfig /etc/rancher/rke2/rke2.yaml -n monitoring port-forward svc/kube-prometheus-stack-grafana 3000:80
+  # then open http://localhost:3000 (username: admin)
+  ```
 
 ## 5. Clean up
 
