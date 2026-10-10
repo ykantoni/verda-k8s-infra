@@ -41,11 +41,14 @@ KUBECONFIG_PATH="$HOME/verda_kubeconfig.yaml"
 kubectl() { command kubectl --kubeconfig "$KUBECONFIG_PATH" "$@"; }
 
 echo "Waiting for $POD to be Running..."
-for i in $(seq 1 30); do
+# Same generous budget as unseal-openbao.sh — see its comment. Usually a
+# no-op here since k8s-apply runs that script first, but this one's also
+# meant to work standalone.
+for i in $(seq 1 120); do
   phase="$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   [ "$phase" = "Running" ] && break
   sleep 5
-  if [ "$i" -eq 30 ]; then
+  if [ "$i" -eq 120 ]; then
     echo "Timed out waiting for $POD to be Running." >&2
     exit 1
   fi
@@ -67,7 +70,9 @@ if [ -z "$ROOT_TOKEN" ]; then
   exit 1
 fi
 
-bao() { kubectl -n "$NAMESPACE" exec "$POD" -- env BAO_TOKEN="$ROOT_TOKEN" bao "$@"; }
+# -i forwards stdin — needed for the policy-write heredoc below; harmless
+# for every other call here, none of which read stdin.
+bao() { kubectl -n "$NAMESPACE" exec -i "$POD" -- env BAO_TOKEN="$ROOT_TOKEN" bao "$@"; }
 
 echo "--- Mechanical wiring (idempotent) ---"
 

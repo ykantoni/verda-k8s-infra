@@ -32,11 +32,15 @@ KUBECONFIG_PATH="$HOME/verda_kubeconfig.yaml"
 kubectl() { command kubectl --kubeconfig "$KUBECONFIG_PATH" "$@"; }
 
 echo "Waiting for $POD to be Running..."
-for i in $(seq 1 30); do
+# Generous budget (10 min): on a fresh cluster this isn't just "wait for a
+# pod that already exists" — Argo CD still has to sync the root app,
+# create the child openbao Application, sync that, Helm-install the
+# chart, and schedule the pod, before this pod even exists to check.
+for i in $(seq 1 120); do
   phase="$(kubectl -n "$NAMESPACE" get pod "$POD" -o jsonpath='{.status.phase}' 2>/dev/null || true)"
   [ "$phase" = "Running" ] && break
   sleep 5
-  if [ "$i" -eq 30 ]; then
+  if [ "$i" -eq 120 ]; then
     echo "Timed out waiting for $POD to be Running." >&2
     exit 1
   fi
