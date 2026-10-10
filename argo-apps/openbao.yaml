@@ -24,6 +24,15 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: openbao
+  # openbao-agent-injector self-signs a cert and patches this webhook's
+  # caBundle at runtime (Helm installs it empty) — permanent, harmless
+  # drift between the live object and git otherwise.
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      name: openbao-agent-injector-cfg
+      jqPathExpressions:
+        - '.webhooks[]?.clientConfig.caBundle'
   syncPolicy:
     automated:
       prune: true

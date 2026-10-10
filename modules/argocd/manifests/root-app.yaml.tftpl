@@ -16,6 +16,15 @@ spec:
   destination:
     server: https://kubernetes.default.svc
     namespace: ${namespace}
+  # Argo CD's own controller adds pre/post-delete finalizers to the child
+  # Application objects this app manages (beyond the single
+  # resources-finalizer each one declares in git) — permanent, harmless
+  # drift between the live object and git otherwise.
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /metadata/finalizers
   syncPolicy:
     automated:
       prune: true
