@@ -78,12 +78,19 @@ just k8s-init
 just k8s-apply
 ```
 
+`k8s-apply` does more than `terraform apply` now: right after, it also
+runs `scripts/unseal-openbao.sh` (auto-init/unseal, same as `just unseal`)
+and `scripts/configure-vllm-secret.sh` (wires OpenBao up as External
+Secrets Operator's backend — see `vllm-secrets.yaml` below). Both are
+idempotent and safe on every run, including ones where nothing changed.
+
 (Or, inside this directory directly: `terraform init && terraform plan &&
 terraform apply` — but then `tfstate_location`/`kubeconfig_path` fall back
 to their plain relative defaults instead of the Justfile's computed
 absolute paths, so make sure those still resolve correctly for your
 checkout, or export `TF_VAR_tfstate_location`/`TF_VAR_kubeconfig_path`
-yourself first.)
+yourself first; you'd also need to run the two scripts above yourself,
+since this bypasses the Justfile entirely.)
 
 ## 3. Access Argo CD
 
@@ -182,12 +189,10 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
 
 - **[`external-secrets.yaml`](argo-apps/external-secrets.yaml)** — [External
   Secrets Operator](https://external-secrets.io/), namespace
-  `external-secrets`. Installed with chart defaults (CRDs included); it
-  does nothing until you create a `SecretStore`/`ClusterSecretStore`
-  pointing it at a backend (e.g. the OpenBao instance above, once
-  unsealed) and an `ExternalSecret` referencing it — neither is created
-  here, since that needs real auth configured against an already-unsealed
-  OpenBao.
+  `external-secrets`. Installed with chart defaults (CRDs included). Its
+  first real backend — OpenBao, via a `SecretStore`/`ExternalSecret` — is
+  wired up by `vllm-secrets.yaml` below, for the vLLM app's Hugging Face
+  token specifically; nothing else uses it yet.
 - **[`kube-prometheus-stack.yaml`](argo-apps/kube-prometheus-stack.yaml)** —
   Prometheus + Grafana (plus Alertmanager, node-exporter and
   kube-state-metrics), namespace `monitoring`. One chart rather than two
@@ -234,6 +239,66 @@ pushing it is enough; no `terraform apply` needed per app. Currently:
   IP with no real DNS, add the hostnames to `/etc/hosts` yourself — see
   `verda-vm-infra`'s README for the exact line to add — and get the
   live port number from `just endpoints`.
+
+- **[`vllm-secrets.yaml`](argo-apps/vllm-secrets.yaml)** — another
+  plain-manifest directory Application (same pattern as
+  `gateway-routes.yaml`), pointing at [`vllm-secrets/`](vllm-secrets):
+  a `ServiceAccount` (`vllm`), a `SecretStore` pointing External Secrets
+  Operator at OpenBao's in-cluster Service, and an `ExternalSecret` that
+  turns OpenBao's `secret/vllm/hf-token` into a real `vllm-hf-token`
+  Secret. No secret *values* live in any of these three files — the
+  Hugging Face token itself only ever exists inside OpenBao and inside
+  the Secret ESO materializes from it.
+
+  The OpenBao-side half of this wiring (enabling its kv engine, enabling
+  and configuring Kubernetes auth, writing the policy/role these files'
+  `auth.kubernetes.role: vllm` depends on) isn't part of this
+  Application — it's `scripts/configure-vllm-secret.sh`, which now runs
+  automatically on every `just k8s-apply` (see "2. Deploy" above). The
+  one piece that script can't automate is the actual Hugging Face token
+  value: set `$HF_TOKEN` or save it to `~/.hf-token` first (after
+  accepting Google's Gemma license and generating a READ-scoped token on
+  Hugging Face) for it to get written; otherwise that step is skipped
+  with a message and the `ExternalSecret` stays unresolved until you
+  supply one and rerun `just configure-vllm-secret`.
+
+- **[`vllm.yaml`](argo-apps/vllm.yaml)** — self-hosted
+  [vLLM](https://docs.vllm.ai/), serving
+  [`google/gemma-3n-E4B-it`](https://huggingface.co/google/gemma-3n-E4B-it)
+  (~15.7GB checkpoint) via the official
+  [`vllm-project/production-stack`](https://github.com/vllm-project/production-stack)
+  chart, namespace `vllm`. Requires a GPU node — see `verda-vm-infra`'s
+  README for `gpu1` (`create_gpu_node`, off by default); the pod stays
+  `Pending` until one joins, same as `nvidia-gpu-operator` has been all
+  along. Uses a 20Gi Longhorn-backed PVC for the model cache (per-model
+  `pvcStorage`, chart-provisioned) and the `vllm-hf-token` Secret from
+  `vllm-secrets.yaml` above. The chart's own router component is exposed
+  as `NodePort` `30095` (pinned directly in the chart's values, unlike the
+  Gateway's dynamically-assigned port — this chart supports a fixed
+  `routerSpec.nodePort`):
+
+  ```bash
+  curl http://<any-node-ip>:30095/v1/models
+  curl http://<any-node-ip>:30095/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{"model": "gemma-3n-e4b", "messages": [{"role": "user", "content": "Hello!"}]}'
+  ```
+
+  A few deliberate, documented-in-`vllm.yaml` deviations from the chart's
+  own defaults, worth knowing if you ever touch this file: `tensorParallelSize`
+  forced to `1` (the chart defaults to `2`, assuming multiple GPUs),
+  `requestGPUType` forced to `nvidia.com/gpu` (the chart defaults to a
+  MIG-sliced GPU type, which doesn't apply to a whole, unpartitioned
+  A100), `keda.enabled` forced to `false` (KEDA isn't installed in this
+  cluster — its CRDs don't exist), and `lmcacheConfig.enabled` forced to
+  `false` (keeping this first deployment close to plain vLLM behavior).
+  **Unverified**: this was written and YAML/chart-values-validated but
+  never run against a real pod, since standing up the GPU node is a
+  separate, explicit step you take yourself (see `verda-vm-infra`'s
+  README) — if the model doesn't come up cleanly once a GPU node exists,
+  start by checking the pod's logs for engine-selection or image-tag
+  issues (`tag: "latest"` was used deliberately rather than guessing a
+  specific version known to support Gemma 3n).
 
 **All of the NodePorts above** (Argo CD, OpenBao, Prometheus, Grafana) plus
 `verda-vm-infra`'s Longhorn UI NodePort can be listed in one shot, with the
