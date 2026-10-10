@@ -17,6 +17,17 @@ spec:
           enabled: true
         toolkit:
           enabled: true
+          # RKE2 (unlike vanilla Kubernetes/kubeadm) keeps containerd's
+          # socket and config at non-default paths. Without this, the
+          # toolkit container looks for /run/containerd/containerd.sock,
+          # which doesn't exist here, and crash-loops trying to signal
+          # containerd to reload — this is NVIDIA's own documented fix
+          # for running the GPU Operator on RKE2/k3s.
+          env:
+            - name: CONTAINERD_SOCKET
+              value: /run/k3s/containerd/containerd.sock
+            - name: CONTAINERD_CONFIG
+              value: /var/lib/rancher/rke2/agent/etc/containerd/config.toml
   destination:
     server: https://kubernetes.default.svc
     namespace: gpu-operator
