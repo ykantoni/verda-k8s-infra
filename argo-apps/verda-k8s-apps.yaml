@@ -1,0 +1,42 @@
+# Second wave of Argo CD apps, in the sibling verda-k8s-apps repo. This
+# Application's own directory (argocd-apps/) holds further Application
+# manifests (vllm.yaml, vllm-secrets.yaml) — the same app-of-apps pattern
+# as the root "argo-apps" Application one level up, just nested one more
+# level. sync-wave 1 (the root app's own children, including this one,
+# default to wave 0) means Argo CD applies everything in verda-k8s-infra's
+# argo-apps/ first, and only then creates/syncs this app and the second
+# wave it points to — intentional ordering, not just organizational.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: verda-k8s-apps
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/ykantoni/verda-k8s-apps.git
+    targetRevision: HEAD
+    path: argocd-apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  # Same reason as the root "argo-apps" Application: Argo CD's own
+  # controller adds pre/post-delete finalizers to the child Application
+  # objects this app manages — permanent, harmless drift otherwise.
+  ignoreDifferences:
+    - group: argoproj.io
+      kind: Application
+      jsonPointers:
+        - /metadata/finalizers
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
