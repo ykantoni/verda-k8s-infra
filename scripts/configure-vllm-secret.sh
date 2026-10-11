@@ -54,11 +54,21 @@ for i in $(seq 1 120); do
   fi
 done
 
-STATUS="$(kubectl -n "$NAMESPACE" exec "$POD" -- bao status -tls-skip-verify 2>/dev/null || true)"
-if ! echo "$STATUS" | grep -qi "Sealed.*false"; then
-  echo "$POD isn't unsealed yet — run 'just unseal' first." >&2
-  exit 1
-fi
+# Short retry, not the generous one above: $POD being Running doesn't
+# guarantee bao has finished reporting Sealed=false yet (seen once: this
+# check ran right as unseal-openbao.sh — which runs immediately before
+# this script in k8s-apply — was still finishing up). If it's genuinely
+# never going to unseal, failing after a minute is still fast enough.
+echo "Checking seal status..."
+for i in $(seq 1 12); do
+  STATUS="$(kubectl -n "$NAMESPACE" exec "$POD" -- bao status -tls-skip-verify 2>/dev/null || true)"
+  echo "$STATUS" | grep -qi "Sealed.*false" && break
+  sleep 5
+  if [ "$i" -eq 12 ]; then
+    echo "$POD isn't unsealed yet — run 'just unseal' first." >&2
+    exit 1
+  fi
+done
 
 if [ ! -f "$KEYS_FILE" ]; then
   echo "No root token found at $KEYS_FILE — run 'just unseal' first (it creates this file on first init)." >&2
